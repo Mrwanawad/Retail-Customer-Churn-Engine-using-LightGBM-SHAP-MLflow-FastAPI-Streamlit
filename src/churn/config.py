@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -10,7 +11,8 @@ from typing import Any
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2]
+# CHURN_ROOT for non-editable installs (Docker), where the package sits in site-packages
+ROOT = Path(os.environ.get("CHURN_ROOT") or Path(__file__).resolve().parents[2])
 
 
 class Config(dict):

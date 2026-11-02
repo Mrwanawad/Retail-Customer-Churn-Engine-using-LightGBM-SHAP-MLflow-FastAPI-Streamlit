@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
+import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -18,7 +19,6 @@ from pydantic import BaseModel, Field, model_validator
 from churn import decision
 from churn.config import load_config
 from churn.explain import Explainer
-from churn.score import load_bundle
 
 STATE: dict[str, Any] = {}
 
@@ -26,7 +26,8 @@ STATE: dict[str, Any] = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = load_config()
-    bundle = load_bundle(cfg)
+    # loaded directly: churn.score pulls in batch-only deps (lifelines, lifetimes) the API image doesn't ship
+    bundle = joblib.load(cfg.path("models") / "production" / "churn_model.joblib")
     snaps = pd.read_parquet(cfg.path("gold") / "snapshots.parquet")
     latest = snaps[snaps.cutoff_day == snaps.cutoff_day.max()].set_index("customer_id")
     STATE.update(cfg=cfg, bundle=bundle, latest=latest, explainer=Explainer(bundle["base_model"]))
@@ -74,8 +75,14 @@ def _frame(req: ScoreRequest) -> tuple[pd.DataFrame, str | None]:
     unknown = set(req.features) - set(feats)
     if unknown:
         raise HTTPException(422, f"unknown features: {sorted(unknown)}")
+    if not req.features:
+        raise HTTPException(422, "features is empty: send at least one feature value")
     X = pd.DataFrame([{f: req.features.get(f) for f in feats}])
     for c in meta["features_numeric"]:
+        # a value that was sent but isn't a number is an error, not a missing value to impute
+        bad = req.features.get(c) is not None and pd.isna(pd.to_numeric(X[c], errors="coerce").iloc[0])
+        if bad:
+            raise HTTPException(422, f"{c} must be numeric, got {req.features[c]!r}")
         X[c] = pd.to_numeric(X[c], errors="coerce")
     for c in meta["features_categorical"]:
         X[c] = X[c].fillna("Unknown").astype(str)

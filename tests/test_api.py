@@ -41,4 +41,7 @@ def test_predict_raw_features_and_validation(client):
     assert r.status_code == 200
     assert client.post("/predict", json={"features": {"not_a_feature": 1}}).status_code == 422
     assert client.post("/predict", json={}).status_code == 422
+    assert client.post("/predict", json={"features": {}}).status_code == 422
+    assert client.post("/predict", json={"features": {"recency_days": "abc"}}).status_code == 422
+    assert client.post("/predict", json={"features": {"recency_days": "45"}}).status_code == 200
     assert client.post("/predict", json={"customer_id": "C999999"}).status_code == 404
