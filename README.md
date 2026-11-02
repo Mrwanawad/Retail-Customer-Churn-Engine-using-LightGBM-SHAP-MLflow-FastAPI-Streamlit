@@ -1,105 +1,354 @@
 # Retail Customer Churn & Retention Engine
 
-Weekly batch system that ranks loyalty customers by their risk of not buying again in the next 60 days (with 30 and 90 day scores too), explains each score, and picks the set of customers worth a retention offer by expected profit.
+[![Live app](https://img.shields.io/badge/Live%20app-retail--churn--engine.streamlit.app-FF4B4B?logo=streamlit&logoColor=white)](https://retail-churn-engine.streamlit.app)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![LightGBM](https://img.shields.io/badge/LightGBM-calibrated-2E8B57)
+![MLflow](https://img.shields.io/badge/MLflow-registry-0194E2?logo=mlflow&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-serving-009688?logo=fastapi&logoColor=white)
 
-Built on **Dunnhumby *The Complete Journey***: two years of real supermarket purchases from 2,500 households (2.6M line items, 582 stores, real campaigns and coupon redemptions). Design: [architecture.md](architecture.md).
+**Live demo: https://retail-churn-engine.streamlit.app**
 
-## Results (out-of-time test: snapshots 2025-09-07 and 2025-10-05)
+An end-to-end churn system for a grocery loyalty programme. Every week it ingests raw exports from CRM, POS, loyalty and marketing systems, cleans and resolves them into one customer view, scores each customer's probability of not buying again in the next 30, 60 and 90 days, explains every score, estimates customer lifetime value, and selects the customers worth a retention offer by expected profit. Monitoring decides when the model needs retraining.
+
+Built on **Dunnhumby *The Complete Journey***: two years of real supermarket transactions from 2,500 households (2.6M line items, 582 stores, real campaigns and coupon redemptions), re-delivered as messy source-system exports so the cleaning layer faces production-grade problems.
+
+---
+
+## Contents
+
+- [Results](#results)
+- [System architecture](#system-architecture)
+- [How the services call each other](#how-the-services-call-each-other)
+- [Tech stack](#tech-stack)
+- [Data engineering](#data-engineering)
+- [Modelling](#modelling)
+- [Decision layer](#decision-layer)
+- [Monitoring and retraining](#monitoring-and-retraining)
+- [Application and API](#application-and-api)
+- [Run locally](#run-locally)
+- [Repository layout](#repository-layout)
+
+---
+
+## Results
+
+Measured on out-of-time test snapshots the model never saw during training or selection.
 
 | Metric | Value |
 |---|---|
-| PR-AUC (primary) | **0.350** (base rate 0.071, so 5x random) |
+| PR-AUC, 60-day churn (primary) | **0.350**, base rate 0.071 (5x random) |
 | ROC-AUC | 0.885 |
-| Recall @ top 10% | 48.2% of churners caught by contacting 10% of customers |
+| Recall @ top 10% | 48.2% of churners reached by contacting 10% of customers |
 | Lift @ top 10% | 4.8x |
-| Brier (calibrated) | 0.053 |
-| 30-day / 90-day model PR-AUC | 0.500 (base 0.144) / 0.219 (base 0.041) |
-| Cox PH C-index (time to churn) | 0.838 |
+| Brier score (calibrated) | 0.053 |
+| PR-AUC, 30-day / 90-day models | 0.500 (base 0.144) / 0.219 (base 0.041) |
+| Cox PH concordance (time to churn) | 0.838 |
 | Identity resolution, pairwise precision / recall | 99.3% / 94.7% |
+| Retention campaign | 155 customers targeted, $671 expected profit |
 
-Model selection on the validation snapshots: Optuna-tuned LightGBM (PR-AUC 0.400) narrowly beat the best baseline, RandomForest (0.398), followed by LogisticRegression (0.362), XGBoost (0.348) and CatBoost (0.289). Class weights, under-sampling and SMOTE-NC did not beat the unweighted tuned model, so imbalance is handled by calibration and the decision threshold instead of resampling.
+Model selection: Optuna-tuned LightGBM (validation PR-AUC 0.400) beat RandomForest (0.398), Logistic Regression (0.362), XGBoost (0.348) and CatBoost (0.289). Class weighting, under-sampling and SMOTE-NC did not beat the unweighted tuned model, so class imbalance is handled by probability calibration and a profit-based decision threshold.
 
-## Pipeline
+---
 
+## System architecture
+
+```mermaid
+flowchart LR
+    subgraph SRC["Source systems"]
+        CRM[(CRM<br/>customers, complaints)]
+        POS[(POS<br/>legacy + v2 layouts)]
+        LOY[(Loyalty ledger)]
+        MKT[(Marketing<br/>campaigns, coupons)]
+    end
+
+    subgraph DATA["Data platform (medallion)"]
+        BR[Bronze<br/>raw text + lineage<br/>parquet by extract date]
+        RC{{Raw contracts<br/>pandera}}
+        SL[Silver<br/>typed, deduplicated,<br/>identity-resolved]
+        GD[Gold<br/>point-in-time snapshots<br/>30 / 60 / 90-day labels]
+    end
+
+    subgraph ML["Model lifecycle"]
+        TR[Training<br/>baselines, Optuna,<br/>calibration, SHAP]
+        REG[(MLflow<br/>tracking + registry)]
+        BUN[Production bundle<br/>models/production]
+    end
+
+    subgraph SERVE["Scoring and decisions"]
+        SC[Batch scoring<br/>probabilities + reasons]
+        CLV[CLV<br/>BG/NBD + Gamma-Gamma]
+        SV[Survival<br/>Kaplan-Meier, Cox PH]
+        DEC[Decision layer<br/>expected profit, holdout]
+        MON[Monitoring<br/>PSI, Evidently,<br/>realised vs predicted]
+    end
+
+    subgraph OUT["Consumers"]
+        APP[Streamlit app]
+        API[FastAPI service]
+        DB[(PostgreSQL<br/>churn_scores)]
+    end
+
+    CRM & POS & LOY & MKT --> BR --> RC --> SL --> GD
+    GD --> TR --> REG --> BUN
+    GD --> SC
+    BUN --> SC
+    SC --> CLV --> DEC
+    SC --> SV
+    SC --> MON
+    DEC --> DB
+    DEC --> APP
+    BUN --> API
+    GD --> API
+    MON -- retrain flag --> TR
 ```
-data/raw/dunnhumby        original Kaggle CSVs
-   │  churn.simulate.exports   rebuild as messy source-system exports (CRM, POS, loyalty, marketing)
-data/exports
-   │  churn.ingest             every column read as text + lineage → parquet partitioned by extract date
-data/bronze
-   │  churn.validation         pandera raw contracts (warn on dirty rows, fail on schema change)
-   │  churn.cleaning.run       identity resolution, POS harmonisation, dedup, returns, outliers
-data/silver                    + strict pandera schemas
-   │  churn.features           point-in-time snapshots every 28 days, labels for 30/60/90 days, survival target
-data/gold/snapshots.parquet
-   │  churn.train              out-of-time split → 8 baselines → Optuna → selection → calibration → SHAP → MLflow registry
-models/production
-   │  churn.score              calibrated probabilities, top-3 SHAP reasons, CLV (BG/NBD + Gamma-Gamma), expected profit, targets, KM by segment
-   │  churn.monitor            PSI drift, prediction drift, realised vs predicted, uplift, retrain trigger, Evidently report
-   ├─ churn.api                FastAPI /predict /explain (Docker)
-   └─ app/streamlit_app.py     5-page demo
+
+The system is a weekly batch pipeline with an on-demand API next to it. Each stage is a Python module with a `run()` function, so the same code runs from the command line, from tests, and from Airflow tasks.
+
+| Layer | Module | Responsibility |
+|---|---|---|
+| Ingestion | `churn.ingest` | Read CSV exports or PostgreSQL extracts (`sql/extract/*.sql`) as text, attach lineage, write bronze parquet partitioned by extract date |
+| Contracts | `churn.validation` | Raw contracts on bronze: warn on dirty rows, fail the run on schema change or more than 2% failures. Strict typed schemas on silver |
+| Cleaning | `churn.cleaning` | Identity resolution, POS harmonisation, deduplication, returns linking, outlier repair, leakage removal |
+| Features | `churn.features` | Point-in-time customer snapshots every 28 days, churn labels for 30/60/90 days, survival target |
+| Training | `churn.train`, `churn.modeling` | Purged out-of-time split, baselines, Optuna tuning, selection, calibration, SHAP, MLflow registration, bundle export |
+| Scoring | `churn.score`, `churn.explain` | Calibrated probabilities for all horizons, top-3 plain-language reasons per customer |
+| Value | `churn.clv`, `churn.survival` | Customer lifetime value, time-to-churn curves by segment, Cox model |
+| Decision | `churn.decision` | Expected profit per customer, target list, random control holdout |
+| Monitoring | `churn.monitor` | Feature and prediction drift, matured-label performance, uplift, retrain trigger |
+| Serving | `churn.api`, `app/streamlit_app.py` | REST scoring and explanations; interactive business app |
+| Orchestration | `churn.pipeline`, `dags/churn_dags.py` | CLI flows and Airflow DAGs over the same functions |
+
+---
+
+## How the services call each other
+
+### Weekly scoring run
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AF as Airflow (Mon 05:00)
+    participant IN as churn.ingest
+    participant VA as churn.validation
+    participant CL as churn.cleaning
+    participant FE as churn.features
+    participant SC as churn.score
+    participant MO as churn.monitor
+    participant PG as PostgreSQL
+
+    AF->>IN: extract(ds)
+    IN->>PG: run sql/extract/*.sql
+    PG-->>IN: source tables
+    IN->>IN: write bronze parquet + lineage
+    AF->>VA: validate()
+    VA->>VA: raw contracts on bronze (fail on schema drift)
+    AF->>CL: clean()
+    CL->>CL: resolve identities, harmonise POS, write silver
+    AF->>FE: build_features()
+    FE->>FE: point-in-time snapshot, write gold
+    AF->>SC: score()
+    SC->>SC: load production bundle, predict, explain, CLV, select targets
+    SC->>PG: append churn_scores
+    AF->>MO: monitor()
+    MO-->>AF: retrain flag
+    alt drift or performance drop
+        AF->>AF: trigger churn_monthly_retrain
+    end
 ```
 
-`dags/churn_dags.py` runs the same functions in Airflow: weekly scoring (Mondays) and monthly retraining, which also starts early when monitoring raises the retrain flag.
+### Monthly retraining run
 
-### Why the data is rebuilt as messy exports
+`churn_monthly_retrain` (1st of the month 03:00, or triggered early by monitoring): `build_features` → `train` → `score` → `monitor` → `export_app_data`.
 
-Dunnhumby is a curated research panel: one clean household key, integer day numbers, no duplicates. Real retail feeds aren't like that, so `churn.simulate.exports` rebuilds the data as four source systems would deliver it. **What each household bought, when, where and for how much is untouched.** Only identities, formats and system defects are simulated:
+1. `churn.train` logs every baseline and Optuna trial to MLflow, registers the selected model as `churn-60d` in the MLflow registry, and exports the calibrated models for all three horizons plus metadata to `models/production/`.
+2. `churn.score` and `churn.monitor` reload that bundle, so the scores and monitoring always match the registered version.
+3. `churn.export_app` writes the app's read-only artifacts to `app/data/` (no names, phones or emails).
 
-| Defect injected | Cleaning answer |
+### Request path
+
+| Caller | Calls | Reads |
+|---|---|---|
+| Streamlit app | in-process `Explainer` + production bundle | `models/production/`, `app/data/` |
+| Client system (CRM, marketing tool) | `POST /predict`, `POST /explain` on FastAPI | production bundle + latest gold snapshot, loaded once at startup |
+| Marketing team / BI | PostgreSQL `churn_scores` table | appended by each weekly run |
+
+---
+
+## Tech stack
+
+| Area | Tools |
 |---|---|
-| 6% of households registered twice (nickname/typo, reformatted phone, uppercased or new email), baskets split across both cards | Blocking on phone, email and name+store, rapidfuzz scoring with nickname folding, union-find, golden record |
-| Names as `SMITH, JOHN` / ` john  smith `, 7 phone formats, 3 date formats, tier casing | Parsers + `phonenumbers` E.164 + validated email |
-| POS vendor upgrade in June 2025: new column names, `dd/mm/yyyy` timestamps, `BR00364` branch codes, `1,234.50` amounts | Two contracts, one harmonised schema |
-| Two monthly files loaded twice (252k duplicate lines) | Dedup on (invoice, line) |
-| Test store and test card, baskets without a scanned card | Excluded and counted |
-| Returns as negative lines, 2k of them without a matching sale | Flagged, linked to the original, orphans kept |
-| Prices keyed ×100 | Fixed when unit price > 50× the product median |
-| `account_status`, `closed_date`, current loyalty tier in the CRM | Dropped as leakage: written after churn or at export time |
+| Language and data | Python 3.12, Polars, pandas, PyArrow / Parquet |
+| Data quality | pandera (Polars raw contracts, pandas silver schemas), phonenumbers |
+| Entity resolution | rapidfuzz, union-find clustering, golden-record survivorship |
+| Machine learning | scikit-learn, LightGBM, XGBoost, CatBoost, imbalanced-learn (SMOTE-NC) |
+| Tuning and tracking | Optuna, MLflow (tracking server on SQLite, model registry) |
+| Explainability | SHAP TreeExplainer, global importance and per-customer reasons |
+| Customer value and time to churn | lifetimes (BG/NBD, Gamma-Gamma), lifelines (Kaplan-Meier, Cox PH) |
+| Monitoring | PSI drift, Evidently data-drift report |
+| Serving | FastAPI, Pydantic, Uvicorn, Docker |
+| Application | Streamlit, Plotly; deployed on Streamlit Community Cloud |
+| Orchestration | Apache Airflow (TaskFlow DAGs), CLI pipeline |
+| Storage | Parquet medallion layers, PostgreSQL via SQLAlchemy + psycopg2 (extracts and score table) |
+| Quality | pytest, Streamlit AppTest, ruff |
 
-Real defects in Dunnhumby itself also surface: float residue such as `2.22e-16` in discount columns (caught by the raw contracts), positive discounts (sign errors), and fuel lines that record litres as quantity.
+---
 
-Complaints don't exist in Dunnhumby, so they are synthetic. Their rate rises in the 8 weeks before a long lapse, so complaint features carry some planted signal (`days_since_complaint` ranks 7th in SHAP importance). Everything else the model learns comes from real behaviour. The simulator writes the true card→household mapping to `data/exports/_truth/` so identity resolution can be scored; the pipeline never reads it.
+## Data engineering
+
+### Source defects and how the pipeline handles them
+
+Dunnhumby is a curated research panel with one clean household key and no duplicates. Retail feeds are not like that, so the data is re-delivered the way four separate source systems would export it. Purchases themselves (what each household bought, when, where, and for how much) are untouched; identities, formats and system defects are introduced.
+
+| Source defect | Pipeline answer |
+|---|---|
+| 6% of households registered twice (nickname or typo, reformatted phone, changed email), baskets split across both cards | Blocking on phone, email and name+store; rapidfuzz scoring with nickname folding; union-find clusters; golden record |
+| Names as `SMITH, JOHN` or ` john  smith `, 7 phone formats, 3 date formats, inconsistent tier casing | Parsers, E.164 phone normalisation, validated email, canonical enums |
+| POS vendor upgrade mid-stream: renamed columns, `dd/mm/yyyy` timestamps, `BR00364` branch codes, `1,234.50` amounts | Two raw contracts, one harmonised transaction schema |
+| Two monthly files loaded twice (252k duplicate lines) | Deduplication on invoice and line number |
+| Test store, test card, baskets without a scanned card | Excluded and counted in the cleaning report |
+| Returns as negative lines, 2k without a matching sale | Flagged, linked to the original sale, orphans kept and counted |
+| Prices keyed ×100 | Repaired when unit price exceeds 50x the product median |
+| `account_status`, `closed_date` and current loyalty tier in the CRM export | Dropped as target leakage |
+
+Defects in the original data are also caught: floating-point residue such as `2.22e-16` in discount columns, positive discounts (sign errors), and fuel lines recording litres as quantity.
+
+Complaints do not exist in Dunnhumby and are generated with a higher rate in the weeks before a long lapse, so complaint features carry a known, documented signal. All other signal comes from real purchase behaviour. Identity-resolution accuracy is scored against a ground-truth card-to-household mapping that the pipeline itself never reads.
 
 ### Leakage controls
 
-- Features use only rows dated on or before the snapshot cutoff. `tests/test_features_split.py` checks that appending future data changes no feature value.
-- Labels whose window hasn't closed stay null (the last 2 snapshots are scoring-only).
-- Purged out-of-time split: train labels close before the validation snapshots begin, and validation labels close before the test snapshots begin.
-- Hyper-parameter CV is grouped by customer and stratified, inside the training window only.
-- Encoders and imputers are fit inside the sklearn Pipeline.
+- Features use only rows dated on or before each snapshot cutoff; a test appends future data and asserts no feature value changes.
+- Labels whose outcome window has not closed stay null; the latest snapshots are scoring-only.
+- Purged out-of-time split: training labels close before validation snapshots begin, and validation labels close before test snapshots begin.
+- Hyper-parameter cross-validation is stratified and grouped by customer, inside the training window only.
+- Imputers and encoders are fitted inside the scikit-learn pipeline.
 
-## Run it
+---
+
+## Modelling
+
+- **Snapshots:** one row per customer every 28 days; 52 features: 45 behavioural (recency, inter-purchase gaps and overdue ratio, 28/90/180-day visits and spend, trends and momentum, basket breadth, discount and coupon use, channel and timing, returns, complaints, loyalty points, campaign exposure, merged cards, tenure) plus 7 household demographics.
+- **Targets:** churn = no purchase in the next 30, 60 or 90 days. 60 days is the primary horizon (90-day churn is too rare at about 4% to act on; 30-day is noisy).
+- **Candidates:** Logistic Regression, RandomForest, LightGBM (no balancing, class weights, under-sampling, SMOTE-NC), XGBoost, CatBoost.
+- **Tuning:** Optuna TPE on LightGBM with stratified group k-fold CV.
+- **Selection:** best validation PR-AUC.
+- **Calibration:** sigmoid calibration on the validation snapshots, so probabilities can be multiplied by money.
+- **Explanations:** SHAP values per customer, turned into readable reasons such as "No visit in 67 days".
+- **Survival:** Kaplan-Meier curves per risk segment and a Cox proportional hazards model for time to churn.
+
+---
+
+## Decision layer
+
+For each customer:
+
+```
+expected_profit = P(churn) × CLV × offer_success_rate − offer_cost
+```
+
+- CLV comes from BG/NBD (purchase frequency) and Gamma-Gamma (spend per purchase), times margin.
+- Customers with positive expected profit are ranked and targeted, optionally capped by budget.
+- A random 10% of targeted customers form a control holdout, so uplift can be measured once outcomes mature.
+- Offer cost, success rate and margin live in `configs/config.yaml` and can be changed live in the app.
+
+A high-risk customer is not automatically a target: a customer with 64% churn risk but $15 lifetime value is skipped, because the offer costs more than the value it is expected to save.
+
+---
+
+## Monitoring and retraining
+
+| Check | Rule |
+|---|---|
+| Feature drift | PSI per feature, latest snapshot vs training window; alert above 0.2 |
+| Prediction drift | PSI of predicted probabilities vs test-period scores |
+| Realised vs predicted | Once labels mature: predicted vs actual churn rate and PR-AUC per snapshot |
+| Uplift | Churn of treated vs control holdout |
+| Retrain trigger | PR-AUC falls more than 0.05 below baseline, more than 30% of features drift, or prediction PSI above 0.2 |
+
+An Evidently data-drift report is generated alongside the PSI checks for visual inspection.
+
+---
+
+## Application and API
+
+### Streamlit app: https://retail-churn-engine.streamlit.app
+
+| Page | What it does |
+|---|---|
+| Overview | Headline KPIs, churn trend, risk segments, lift and cumulative gains, time-to-churn curves by segment |
+| Customer scorer | Search any customer: churn risk for 30/60/90 days, CLV, recommended action, top reasons, SHAP waterfall, profile |
+| What-if | Change a customer's behaviour (recency, frequency, spend, complaints) and see the risk respond |
+| Campaign planner | Set offer cost, success rate, margin and budget; get the target list, expected profit and ROI; download as CSV; check the rule against history |
+| Model card | Test metrics, model comparison, calibration, SHAP importance, survival model, cleaning report, drift and retrain status, Evidently report |
+
+### REST API
+
+```
+GET  /health
+POST /predict   {"customer_id": "C000123"}  or  {"features": {...}}
+POST /explain   same body; adds top reasons and full SHAP contributions
+```
 
 ```bash
-python -m venv .venv && .venv/Scripts/activate        # Windows; source .venv/bin/activate elsewhere
-pip install -r requirements-dev.txt && pip install -e .
-python -m churn.download                               # Kaggle → data/raw/dunnhumby
-python -m churn.pipeline all                           # simulate → ingest → validate → clean → features → train → score → monitor → export
+curl -X POST localhost:8000/explain \
+     -H "Content-Type: application/json" \
+     -d '{"customer_id": "C000123"}'
+```
+
+The response holds calibrated probabilities for every horizon, the risk segment, model version and snapshot date. The Docker image runs as a non-root user with a health check.
+
+---
+
+## Run locally
+
+```bash
+python -m venv .venv
+source .venv/bin/activate               # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+pip install -e .
+
+python -m churn.download                # Dunnhumby from Kaggle into data/raw/dunnhumby
+python -m churn.pipeline all            # simulate exports, weekly flow, retrain flow
 pytest -q
-streamlit run app/streamlit_app.py
-uvicorn churn.api:app --port 8000                      # or: docker build -t churn-api . && docker run -p 8000:8000 churn-api
-mlflow ui --backend-store-uri sqlite:///mlflow.db      # runs, metrics, registered model
 ```
 
-```bash
-curl -X POST localhost:8000/explain -H "Content-Type: application/json" -d '{"customer_id": "C000123"}'
+| Service | Command |
+|---|---|
+| Streamlit app | `streamlit run app/streamlit_app.py` |
+| FastAPI | `uvicorn churn.api:app --port 8000` |
+| FastAPI in Docker | `docker build -t churn-api . && docker run -p 8000:8000 churn-api` |
+| MLflow UI | `mlflow ui --backend-store-uri sqlite:///mlflow.db` |
+| Weekly flow only | `python -m churn.pipeline weekly` |
+| Retrain flow only | `python -m churn.pipeline retrain` |
+
+With `DATABASE_URL` set, `python -m churn.ingest --source postgres` extracts from PostgreSQL and scoring appends to the `churn_scores` table.
+
+The deployed app reads only committed artifacts (`models/production/` and `app/data/`); `requirements.txt` holds its pinned dependencies.
+
+---
+
+## Repository layout
+
 ```
-
-The full build takes about 6 minutes on a laptop, most of it in Optuna. `python -m churn.ingest --source postgres` pulls the same tables with `sql/extract/*.sql` when `DATABASE_URL` is set, and scoring then appends to a `churn_scores` table.
-
-## Deploy: Streamlit Community Cloud
-
-The app reads only committed artifacts: `models/production/` (0.7 MB) and `app/data/` (6.5 MB, no names, phones or emails). In Community Cloud choose the repo, main file `app/streamlit_app.py`, Python 3.12. `requirements.txt` holds the app's pinned dependencies. The app sleeps when idle, so open it a few minutes before a demo.
-
-## Layout
-
-```
-configs/config.yaml   all parameters (churn horizon, cutoffs, simulation rates, offer economics)
-src/churn/            pipeline package
-sql/extract/          source extract queries for the PostgreSQL path
-dags/                 Airflow DAGs
-app/                  Streamlit app + exported demo data
-models/production/    exported model bundle + metadata (from the MLflow registry run)
-tests/                cleaning, leakage, split, decision, API and app smoke tests
+configs/config.yaml     all parameters: horizons, cutoffs, split, offer economics, simulation rates
+src/churn/
+  simulate/             re-delivers Dunnhumby as messy CRM, POS, loyalty and marketing exports
+  ingest.py             CSV / PostgreSQL ingestion into bronze
+  validation.py         raw contracts and silver schemas
+  cleaning/             identity resolution, transaction cleaning, silver build
+  features.py           point-in-time snapshots and labels
+  modeling.py           split, model factory, imbalance strategies
+  train.py              training, tuning, calibration, MLflow, bundle export
+  explain.py            SHAP reasons
+  clv.py  survival.py   customer value and time-to-churn
+  decision.py           expected profit and target selection
+  score.py  monitor.py  batch scoring and monitoring
+  api.py                FastAPI service
+  pipeline.py           weekly / retrain / all flows
+sql/extract/            source extract queries
+dags/                   Airflow DAGs
+app/                    Streamlit app and its read-only data
+models/production/      deployed model bundle and metadata
+tests/                  cleaning, leakage, split, API and app tests
+Dockerfile              API image
 ```
