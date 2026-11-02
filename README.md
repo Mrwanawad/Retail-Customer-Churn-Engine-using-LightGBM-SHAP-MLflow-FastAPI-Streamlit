@@ -182,40 +182,35 @@ sequenceDiagram
 What happens between a business user opening the URL and seeing a churn score on screen.
 
 ```mermaid
-flowchart LR
-    U([Business user<br/>web browser])
+flowchart TD
+    U(["Business user<br/>web browser"])
+    GH[("GitHub<br/>main branch")]
+
     subgraph CLOUD["Streamlit Community Cloud"]
-        direction TB
         URL["retail-churn-engine.streamlit.app<br/>HTTPS + WebSocket"]
-        RT["Streamlit runtime<br/>Python 3.12 container<br/>requirements.txt"]
+        RT["Streamlit runtime<br/>Python 3.12 container, requirements.txt"]
         APP["app/streamlit_app.py<br/>st.navigation router"]
         CACHE[("In-memory cache<br/>keyed by artifact mtime")]
         subgraph PAGES["Pages"]
-            P1[Overview]
-            P2[Customer scorer]
-            P3[What-if]
-            P4[Campaign planner]
-            P5[Model card]
+            direction LR
+            P1[Overview] ~~~ P2[Customer scorer] ~~~ P3[What-if] ~~~ P4[Campaign planner] ~~~ P5[Model card]
         end
         subgraph CORE["churn package, in-process"]
-            EX["explain.Explainer<br/>SHAP reasons"]
-            DE["decision<br/>risk segments, expected profit"]
+            direction LR
+            EX["explain.Explainer<br/>SHAP reasons"] ~~~ DE["decision<br/>risk segments, expected profit"]
         end
         subgraph ART["Committed artifacts"]
-            MB[("models/production<br/>3 calibrated LightGBM models<br/>+ metadata")]
-            AD[("app/data<br/>scores, snapshot, metrics,<br/>drift, survival")]
+            direction LR
+            MB[("models/production<br/>3 calibrated LightGBM models")] ~~~ AD[("app/data<br/>scores, metrics, drift, survival")]
         end
     end
-    GH[(GitHub<br/>main branch)]
 
-    U -- "1. open URL" --> URL --> RT --> APP
-    APP -- "2. first load" --> CACHE
-    CACHE -- "read once" --> MB & AD
-    APP --> P1 & P2 & P3 & P4 & P5
-    P2 & P3 --> EX
-    P2 & P3 & P4 --> DE
-    P1 & P2 & P3 & P4 & P5 -- "3. charts, tables, CSV" --> U
-    GH -- "push to main redeploys" --> RT
+    U -- "1. opens the URL" --> URL --> RT --> APP
+    APP -- "2. loads once" --> CACHE --> ART
+    APP -- "3. renders the chosen page" --> PAGES
+    PAGES -- "scores and explains" --> CORE
+    PAGES == "4. charts, tables, CSV download" ==> U
+    GH -. "push to main redeploys" .-> RT
 ```
 
 ### A user session, step by step
