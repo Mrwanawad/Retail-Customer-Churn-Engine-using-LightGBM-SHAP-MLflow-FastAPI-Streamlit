@@ -123,9 +123,17 @@ def overview():
     surv = load("survival_by_segment.parquet").set_index("risk_segment").reindex(RISK_LABELS).reset_index()
     curves = load("survival_curves.parquet")
     a, b = st.columns([2, 3])
-    a.dataframe(surv.rename(columns={"rmst_days_365": "mean days active (of next 365)"}).style.format(
-        {"survival_90d": "{:.0%}", "survival_180d": "{:.0%}", "mean days active (of next 365)": "{:.0f}",
-         "median_days_to_churn": "{:.0f}"}, na_rep="> horizon"), hide_index=True, width="stretch")
+    table = pd.DataFrame({
+        "Segment": surv.risk_segment,
+        "Customer-snapshots": surv.customers,
+        "Still shopping at 90d": surv.survival_90d.map("{:.0%}".format),
+        "Still shopping at 180d": surv.survival_180d.map("{:.0%}".format),
+        "Mean active days (next 365)": surv.rmst_days_365.round(0).astype(int),
+        "Median days to churn": pd.to_numeric(surv.median_days_to_churn, errors="coerce").map(
+            lambda v: "not reached" if pd.isna(v) else f"{v:.0f}"),
+    })
+    a.dataframe(table, hide_index=True, width="stretch")
+    a.caption("Kaplan-Meier on the validation and test snapshots, grouped by the model's risk segment.")
     fig = px.line(curves, x="days", y="survival", color="risk_segment", color_discrete_map=SEG_COLORS,
                   line_shape="hv", title="Kaplan-Meier: share still shopping")
     fig.update_yaxes(tickformat=".0%")
@@ -143,15 +151,16 @@ def customer_scorer():
     cid = st.selectbox("Customer (sorted by risk)", order, format_func=_label)
     row = scores.set_index("customer_id").loc[cid]
     X = latest.loc[[cid]]
+    decision_label = "Hold out" if row.holdout else ("Target" if row.targeted else "Skip")
     c = st.columns(6)
     kpi(c[0], f"P(churn {H}d)", f"{row.churn_probability:.1%}")
-    for i, h in enumerate(sorted(bundle["models"]), start=1):
-        if h != H and i < 4:
-            kpi(c[i], f"P(churn {h}d)", f"{row[f'churn_prob_{h}d']:.1%}")
+    others = [h for h in sorted(bundle["models"]) if h != H]
+    for col, h in zip(c[1:3], others, strict=False):
+        kpi(col, f"P(churn {h}d)", f"{row[f'churn_prob_{h}d']:.1%}")
     kpi(c[3], "Segment", row.risk_segment)
-    kpi(c[4], "CLV if retained (180d)", f"${row.clv:,.0f}")
-    kpi(c[5], "Offer decision", "Control (hold out)" if row.holdout else ("Target" if row.targeted else "Do not target"),
-        f"Expected profit ${row.expected_profit:,.2f}")
+    kpi(c[4], "CLV if retained", f"${row.clv:,.0f}", "Expected margin over the next 180 days (BG/NBD + Gamma-Gamma)")
+    kpi(c[5], "Offer", decision_label,
+        f"Expected profit ${row.expected_profit:,.2f}. 'Hold out' = random control group, not contacted")
 
     ex: Explainer = bundle["explainer"]
     sv = ex.shap_frame(X[FEATS]).iloc[0]
@@ -184,18 +193,27 @@ def what_if():
     st.title("What-if analysis")
     st.caption("Change behaviour and watch the calibrated probability move. Derived features (overdue ratio, visit days) are kept consistent.")
     order = scores.sort_values("churn_probability", ascending=False).customer_id.tolist()
-    cid = st.selectbox("Start from customer", order, index=min(25, len(order) - 1), format_func=_label)
+    # default: a regular shopper in the Medium segment, so every slider has room to move both ways
+    typical = latest.loc[scores[scores.risk_segment == "Medium"].customer_id]
+    typical = typical[typical.baskets_90d.between(10, 40)]
+    default = order.index(typical.index[0]) if len(typical) else 0
+    cid = st.selectbox("Start from customer", order, index=default, format_func=_label)
     base = latest.loc[[cid]].copy()
     b = base.iloc[0]
+
+    def val(col, lo, hi, fallback):
+        v = b[col]
+        return float(np.clip(v, lo, hi)) if pd.notna(v) else fallback
+
     c1, c2 = st.columns(2)
     with c1:
-        recency = st.slider("Days since last visit", 0, 90, int(b.recency_days))
-        baskets = st.slider("Baskets in last 90 days", 1, 200, int(max(b.baskets_90d, 1)))
-        complaints = st.slider("Complaints in last 90 days", 0, 5, int(b.complaints_90d))
+        recency = st.slider("Days since last visit", 0, 90, int(val("recency_days", 0, 90, 7)))
+        baskets = st.slider("Baskets in last 90 days", 1, 200, int(val("baskets_90d", 1, 200, 10)))
+        complaints = st.slider("Complaints in last 90 days", 0, 5, int(val("complaints_90d", 0, 5, 0)))
     with c2:
-        disc = st.slider("Discount share of basket value", 0.0, 0.6, float(np.clip(b.discount_share_90d, 0, 0.6)), 0.01)
-        spend_tr = st.slider("Spend vs previous quarter", 0.0, 3.0, float(np.clip(b.spend_trend, 0, 3)), 0.05)
-        visit_tr = st.slider("Visits vs previous quarter", 0.0, 3.0, float(np.clip(b.visit_trend, 0, 3)), 0.05)
+        disc = st.slider("Discount share of basket value", 0.0, 0.6, val("discount_share_90d", 0, 0.6, 0.05), 0.01, format="%.2f")
+        spend_tr = st.slider("Spend vs previous quarter", 0.0, 3.0, val("spend_trend", 0, 3, 1.0), 0.05, format="%.2fx")
+        visit_tr = st.slider("Visits vs previous quarter", 0.0, 3.0, val("visit_trend", 0, 3, 1.0), 0.05, format="%.2fx")
 
     x = base.copy()
     x["recency_days"] = recency
@@ -362,6 +380,10 @@ PAGES = [
     (model_card, "Model card", ":material/fact_check:", "model-card"),
 ]
 start = os.environ.get("CHURN_APP_START_PAGE", "overview")  # lets tests open any page headlessly
-pg = st.navigation([st.Page(f, title=t, icon=i, url_path=u, default=(u == start)) for f, t, i, u in PAGES])
+pg = st.navigation([
+    # the default page lives at "/", so it gets no url_path of its own
+    st.Page(f, title=t, icon=i, default=True) if u == start else st.Page(f, title=t, icon=i, url_path=u)
+    for f, t, i, u in PAGES
+])
 st.sidebar.caption("Data: Dunnhumby *The Complete Journey* (2,500 households, 2 years), rebuilt as messy source-system exports.")
 pg.run()
