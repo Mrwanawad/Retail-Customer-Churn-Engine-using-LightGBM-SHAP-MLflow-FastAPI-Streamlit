@@ -30,15 +30,27 @@ st.set_page_config(page_title="Retail Churn Engine", page_icon="🛒", layout="w
 
 
 # ---------------------------------------------------------------- loaders
+MODEL_PATH = ROOT / "models" / "production" / "churn_model.joblib"
+
+
+# cache keys include the file's mtime so a redeploy with new artifacts never serves stale ones
 @st.cache_resource
-def load_bundle():
-    b = joblib.load(ROOT / "models" / "production" / "churn_model.joblib")
+def _load_bundle(mtime: float):
+    b = joblib.load(MODEL_PATH)
     b["explainer"] = Explainer(b["base_model"])
     return b
 
 
-@st.cache_data
+def load_bundle():
+    return _load_bundle(MODEL_PATH.stat().st_mtime)
+
+
 def load(name: str):
+    return _load(name, (DATA / name).stat().st_mtime)
+
+
+@st.cache_data
+def _load(name: str, mtime: float):
     p = DATA / name
     if p.suffix == ".parquet":
         return pd.read_parquet(p)
@@ -192,7 +204,9 @@ def customer_scorer():
         st.markdown("**Profile at snapshot**")
         show = ["recency_days", "gap_mean", "overdue_ratio", "baskets_90d", "spend_90d", "spend_trend",
                 "discount_share_90d", "complaints_90d", "tenure_days", "n_cards"]
-        st.dataframe(X[show].T.rename(columns={cid: "value"}).style.format("{:,.2f}", na_rep="n/a"), width="stretch")
+        prof = X[show].astype(float).T.rename(columns={cid: "value"})
+        prof["value"] = prof["value"].map(lambda v: "n/a" if pd.isna(v) else f"{v:,.2f}")
+        st.dataframe(prof, width="stretch")
     st.caption("SHAP is computed on the uncalibrated booster (log-odds); the probability shown above is after calibration.")
 
 
