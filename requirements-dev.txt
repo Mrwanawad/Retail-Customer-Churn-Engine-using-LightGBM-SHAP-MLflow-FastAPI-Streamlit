@@ -1,0 +1,25 @@
+# Full pipeline: ingestion, cleaning, training, monitoring, tests
+-r requirements-api.txt
+polars==2.1.0
+pandera==0.35.0
+RapidFuzz==3.14.6
+phonenumbers==9.0.42
+Faker==40.44.0
+xgboost==3.4.1
+catboost==1.2.10
+imbalanced-learn==0.14.2
+optuna==5.0.0
+mlflow==3.17.2
+lifelines==0.30.3
+Lifetimes==0.11.3
+evidently==0.7.23
+streamlit==1.66.1
+plotly==5.24.1
+matplotlib==3.11.2
+seaborn==0.13.2
+SQLAlchemy==2.1.6
+pytest==9.2.0
+ruff==0.17.3
+httpx==0.28.1
+kagglehub==1.0.3
+psycopg2-binary==2.9.13

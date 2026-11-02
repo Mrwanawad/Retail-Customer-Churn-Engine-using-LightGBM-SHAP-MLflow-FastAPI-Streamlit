@@ -1,0 +1,45 @@
+{
+  "customers": {
+    "cards_in": 2650,
+    "customers_out": 2507,
+    "links": 143,
+    "multi_card_customers": 143,
+    "invalid_phone": 108
+  },
+  "transactions": {
+    "lines_in": 2865869,
+    "unparseable_ts": 0,
+    "duplicate_lines_dropped": 252279,
+    "test_lines_dropped": 462,
+    "unscanned_card_lines_dropped": 10167,
+    "unknown_card_lines_dropped": 0,
+    "return_lines": 17330,
+    "orphan_return_lines": 2072,
+    "positive_discount_fixed": 36,
+    "fuel_qty_normalised": 20620,
+    "price_typo_fixed": 106,
+    "quantity_capped": 2547,
+    "lines_out": 2602961
+  },
+  "baskets": 292714,
+  "complaints": {
+    "rows": 3240,
+    "unknown_card": 0
+  },
+  "points_ledger": {
+    "rows": 289493,
+    "unknown_card": 0
+  },
+  "marketing": {
+    "campaigns": 30,
+    "targets": 7206,
+    "redemptions": 2318
+  },
+  "dedup_quality": {
+    "true_pairs": 150,
+    "predicted_pairs": 143,
+    "precision": 0.993006993006993,
+    "recall": 0.9466666666666667,
+    "unresolved_cards_share": 0.05333333333333334
+  }
+}

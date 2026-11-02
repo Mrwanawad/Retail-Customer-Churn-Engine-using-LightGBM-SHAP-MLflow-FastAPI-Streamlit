@@ -1,0 +1,52 @@
+{
+  "reference_cutoffs": [
+    196,
+    224,
+    252,
+    280,
+    308,
+    336,
+    364,
+    392,
+    420
+  ],
+  "current_cutoff": 711,
+  "features_drifted": 6,
+  "features_checked": 45,
+  "top_drift": [
+    {
+      "feature": "tenure_days",
+      "psi": 7.655881606499749,
+      "drifted": true
+    },
+    {
+      "feature": "days_since_signup",
+      "psi": 6.462438974634131,
+      "drifted": true
+    },
+    {
+      "feature": "days_since_complaint",
+      "psi": 1.0529806039172052,
+      "drifted": true
+    },
+    {
+      "feature": "campaigns_targeted_180d",
+      "psi": 0.4470503110480381,
+      "drifted": true
+    },
+    {
+      "feature": "gap_max",
+      "psi": 0.29407640220659526,
+      "drifted": true
+    }
+  ],
+  "prediction_psi": 0.009877750771962757,
+  "baseline_pr_auc": 0.35016823853706347,
+  "latest_matured_pr_auc": 0.3347347948863566,
+  "uplift": {
+    "status": "no outcomes yet"
+  },
+  "retrain": false,
+  "retrain_reasons": [],
+  "evidently_report": "evidently_drift.html"
+}

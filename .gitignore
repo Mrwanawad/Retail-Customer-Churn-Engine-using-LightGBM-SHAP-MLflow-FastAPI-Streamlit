@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# data: raw Dunnhumby + generated exports/parquet are rebuilt by the pipeline
+data/raw/
+data/exports/
+data/bronze/
+data/silver/
+data/gold/
+data/reports/
+!data/sample/
+
+mlruns/
+mlflow.db
+models/*
+!models/.gitkeep
+!models/production/
+freeze.txt
+.env
+.streamlit/secrets.toml
+catboost_info/
+*.egg-info/

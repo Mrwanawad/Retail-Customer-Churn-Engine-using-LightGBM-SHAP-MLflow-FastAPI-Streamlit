@@ -1,0 +1,94 @@
+[
+  {
+    "table": "crm_customers",
+    "rows": 2650,
+    "status": "pass",
+    "missing_columns": [],
+    "failures": {},
+    "examples": {}
+  },
+  {
+    "table": "pos_legacy",
+    "rows": 1947810,
+    "status": "warn",
+    "missing_columns": [],
+    "failures": {
+      "RETAIL_DISC:str_matches('^-?\\d+(\\.\\d+)?$')": 25
+    },
+    "examples": {
+      "RETAIL_DISC:str_matches('^-?\\d+(\\.\\d+)?$')": [
+        "2.220446e-16",
+        "5.5511150000000004e-17",
+        "5.5511150000000004e-17",
+        "2.220446e-16",
+        "-1.38778e-16"
+      ]
+    }
+  },
+  {
+    "table": "pos_v2",
+    "rows": 918059,
+    "status": "warn",
+    "missing_columns": [],
+    "failures": {
+      "promo_disc:str_matches('^-?\\d+(\\.\\d+)?$')": 11
+    },
+    "examples": {
+      "promo_disc:str_matches('^-?\\d+(\\.\\d+)?$')": [
+        "1.110223e-16",
+        "1.110223e-16",
+        "-1.33227e-15",
+        "1.110223e-16",
+        "1.110223e-16"
+      ]
+    }
+  },
+  {
+    "table": "crm_complaints",
+    "rows": 3240,
+    "status": "pass",
+    "missing_columns": [],
+    "failures": {},
+    "examples": {}
+  },
+  {
+    "table": "loyalty_ledger",
+    "rows": 289493,
+    "status": "pass",
+    "missing_columns": [],
+    "failures": {},
+    "examples": {}
+  },
+  {
+    "table": "mkt_campaigns",
+    "rows": 30,
+    "status": "pass",
+    "missing_columns": [],
+    "failures": {},
+    "examples": {}
+  },
+  {
+    "table": "mkt_targets",
+    "rows": 7208,
+    "status": "pass",
+    "missing_columns": [],
+    "failures": {},
+    "examples": {}
+  },
+  {
+    "table": "mkt_redemptions",
+    "rows": 2318,
+    "status": "pass",
+    "missing_columns": [],
+    "failures": {},
+    "examples": {}
+  },
+  {
+    "table": "products",
+    "rows": 92353,
+    "status": "pass",
+    "missing_columns": [],
+    "failures": {},
+    "examples": {}
+  }
+]

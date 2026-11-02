@@ -1,0 +1,53 @@
+# Central pipeline config. Paths are relative to the repo root.
+seed: 42
+
+paths:
+  dunnhumby: data/raw/dunnhumby          # original Kaggle CSVs
+  exports: data/exports                  # simulated source-system exports (messy)
+  bronze: data/bronze                    # raw parquet, partitioned by extract date
+  silver: data/silver                    # validated + cleaned tables
+  gold: data/gold                        # features, labels, scores
+  reports: data/reports                  # validation / drift / profiling reports
+  models: models
+
+calendar:
+  # Dunnhumby DAY 1 is mapped to this date so the data reads like a real POS feed.
+  day_one: "2024-01-01"
+
+simulation:
+  duplicate_customer_rate: 0.06      # households re-registered with a second loyalty card
+  card_split_share: 0.35             # share of baskets that land on the duplicate card
+  walk_in_line_rate: 0.004           # POS lines with no loyalty card
+  double_load_months: 2              # monthly exports loaded twice by the ETL
+  return_line_rate: 0.006            # lines later returned
+  orphan_return_rate: 0.0008         # returns with no matching sale
+  price_typo_rate: 0.00005           # unit price keyed x100
+  test_store_id: 9999
+  schema_change_day: 520             # POS vendor upgrade: column names + formats change
+  complaint_base_rate: 0.0015        # per household-week
+
+churn:
+  primary_horizon: 60                # days with no purchase => churned
+  horizons: [30, 60, 90]
+  activity_window: 90                # eligible if purchased in the 90 days before cutoff
+  first_cutoff_day: 196              # leaves ~6 months of history for every household
+  cutoff_step_days: 28
+  min_history_days: 56
+
+split:
+  test_cutoffs: 2                    # latest labelled snapshots held out (out-of-time)
+  valid_cutoffs: 2
+
+cleaning:
+  fuzzy_name_threshold: 88
+  outlier_quantile: 0.999
+
+decision:
+  offer_cost: 5.0                    # $ per targeted customer
+  offer_success_rate: 0.25           # P(retained | churner, treated)
+  clv_horizon_days: 180
+  margin: 0.25                       # gross margin on revenue for CLV
+
+training:
+  optuna_trials: 40
+  cv_folds: 4

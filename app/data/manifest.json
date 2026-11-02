@@ -1,0 +1,20 @@
+[
+  "baselines.csv",
+  "churn_scores.parquet",
+  "churn_trend.parquet",
+  "cleaning_report.json",
+  "cox_summary.csv",
+  "evidently_drift.html",
+  "feature_drift.csv",
+  "latest_snapshot.parquet",
+  "lift.csv",
+  "monitoring_summary.json",
+  "raw_contracts.json",
+  "realised_vs_predicted.csv",
+  "reliability.csv",
+  "shap_importance.csv",
+  "survival_by_segment.parquet",
+  "survival_curves.parquet",
+  "survival_metrics.json",
+  "test_predictions.parquet"
+]
