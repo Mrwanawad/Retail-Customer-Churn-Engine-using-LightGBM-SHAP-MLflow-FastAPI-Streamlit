@@ -19,14 +19,17 @@ Built on **Dunnhumby *The Complete Journey***: two years of real supermarket tra
 - [Results](#results)
 - [System architecture](#system-architecture)
 - [How the services call each other](#how-the-services-call-each-other)
+- [From end user to interface](#from-end-user-to-interface)
 - [Tech stack](#tech-stack)
 - [Data engineering](#data-engineering)
 - [Modelling](#modelling)
 - [Decision layer](#decision-layer)
 - [Monitoring and retraining](#monitoring-and-retraining)
 - [Application and API](#application-and-api)
+- [Deployment](#deployment)
 - [Run locally](#run-locally)
 - [Repository layout](#repository-layout)
+- [Project status](#project-status)
 
 ---
 
@@ -174,11 +177,90 @@ sequenceDiagram
 
 ---
 
+## From end user to interface
+
+What happens between a business user opening the URL and seeing a churn score on screen.
+
+```mermaid
+flowchart LR
+    U([Business user<br/>web browser])
+    subgraph CLOUD["Streamlit Community Cloud"]
+        direction TB
+        URL["retail-churn-engine.streamlit.app<br/>HTTPS + WebSocket"]
+        RT["Streamlit runtime<br/>Python 3.12 container<br/>requirements.txt"]
+        APP["app/streamlit_app.py<br/>st.navigation router"]
+        CACHE[("In-memory cache<br/>keyed by artifact mtime")]
+        subgraph PAGES["Pages"]
+            P1[Overview]
+            P2[Customer scorer]
+            P3[What-if]
+            P4[Campaign planner]
+            P5[Model card]
+        end
+        subgraph CORE["churn package, in-process"]
+            EX["explain.Explainer<br/>SHAP reasons"]
+            DE["decision<br/>risk segments, expected profit"]
+        end
+        subgraph ART["Committed artifacts"]
+            MB[("models/production<br/>3 calibrated LightGBM models<br/>+ metadata")]
+            AD[("app/data<br/>scores, snapshot, metrics,<br/>drift, survival")]
+        end
+    end
+    GH[(GitHub<br/>main branch)]
+
+    U -- "1. open URL" --> URL --> RT --> APP
+    APP -- "2. first load" --> CACHE
+    CACHE -- "read once" --> MB & AD
+    APP --> P1 & P2 & P3 & P4 & P5
+    P2 & P3 --> EX
+    P2 & P3 & P4 --> DE
+    P1 & P2 & P3 & P4 & P5 -- "3. charts, tables, CSV" --> U
+    GH -- "push to main redeploys" --> RT
+```
+
+### A user session, step by step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Business user
+    participant B as Browser
+    participant S as Streamlit Cloud runtime
+    participant A as streamlit_app.py
+    participant C as Cache
+    participant M as Model bundle + app/data
+
+    User->>B: open retail-churn-engine.streamlit.app
+    B->>S: HTTPS request, WebSocket session
+    S->>A: run script for this session
+    A->>C: load bundle and artifacts
+    alt first visit after a deploy
+        C->>M: read joblib + parquet/csv/json
+        M-->>C: models, scores, metrics
+    end
+    C-->>A: cached objects
+    A-->>B: Overview page (KPIs, trend, lift, survival)
+    User->>B: Customer scorer, choose C000493
+    B->>A: widget event
+    A->>A: 30/60/90-day risk, SHAP reasons, expected profit
+    A-->>B: 63.7% Critical, action Skip (CLV $15), SHAP waterfall
+    User->>B: Campaign planner, offer cost $20
+    B->>A: widget event
+    A->>A: recompute expected profit and target list
+    A-->>B: targets, profit, ROI, CSV download
+```
+
+Each interaction re-runs only the page script against cached objects, so responses stay fast and nothing is retrained or rescored on the hosting platform.
+
+---
+
 ## Tech stack
 
 | Area | Tools |
 |---|---|
-| Language and data | Python 3.12, Polars, pandas, PyArrow / Parquet |
+| Language and data | Python 3.12, Polars, pandas, NumPy, PyArrow / Parquet |
+| Data acquisition | kagglehub (Dunnhumby download), Faker (synthetic identities for the source-system simulation) |
+| Configuration | One YAML file (`configs/config.yaml`) loaded with PyYAML |
 | Data quality | pandera (Polars raw contracts, pandas silver schemas), phonenumbers |
 | Entity resolution | rapidfuzz, union-find clustering, golden-record survivorship |
 | Machine learning | scikit-learn, LightGBM, XGBoost, CatBoost, imbalanced-learn (SMOTE-NC) |
@@ -186,11 +268,20 @@ sequenceDiagram
 | Explainability | SHAP TreeExplainer, global importance and per-customer reasons |
 | Customer value and time to churn | lifetimes (BG/NBD, Gamma-Gamma), lifelines (Kaplan-Meier, Cox PH) |
 | Monitoring | PSI drift, Evidently data-drift report |
-| Serving | FastAPI, Pydantic, Uvicorn, Docker |
-| Application | Streamlit, Plotly; deployed on Streamlit Community Cloud |
-| Orchestration | Apache Airflow (TaskFlow DAGs), CLI pipeline |
+| Serving | FastAPI, Pydantic v2, Uvicorn, Docker (`python:3.12-slim`, non-root, health check) |
+| Application | Streamlit (multi-page `st.navigation`), Plotly |
+| Hosting and delivery | Streamlit Community Cloud, GitHub (push-to-deploy) |
+| Orchestration | Apache Airflow (TaskFlow DAGs, `TriggerDagRunOperator`), CLI pipeline |
 | Storage | Parquet medallion layers, PostgreSQL via SQLAlchemy + psycopg2 (extracts and score table) |
-| Quality | pytest, Streamlit AppTest, ruff |
+| Quality | pytest, FastAPI TestClient + httpx, Streamlit AppTest, ruff |
+
+Dependencies are split by deployment target so each runtime installs only what it needs:
+
+| File | Installed by | Contents |
+|---|---|---|
+| `requirements.txt` | Streamlit Community Cloud | App only: Streamlit, Plotly, pandas, scikit-learn, LightGBM, SHAP |
+| `requirements-api.txt` | Docker image | API only: FastAPI, Uvicorn, Pydantic, model runtime |
+| `requirements-dev.txt` | Developers, Airflow workers | Everything: API set plus pipeline, training, monitoring and test tools |
 
 ---
 
@@ -295,7 +386,55 @@ curl -X POST localhost:8000/explain \
      -d '{"customer_id": "C000123"}'
 ```
 
-The response holds calibrated probabilities for every horizon, the risk segment, model version and snapshot date. The Docker image runs as a non-root user with a health check.
+The response holds calibrated probabilities for every horizon, the risk segment, model version and snapshot date. Validation errors return 422 (malformed ID, both or neither of `customer_id` and `features`, unknown feature names, non-numeric values, empty feature set) and unknown customers return 404.
+
+---
+
+## Deployment
+
+Heavy work (cleaning, training, scoring) runs offline in the pipeline. Serving layers only load finished artifacts, so they start fast and stay cheap.
+
+```mermaid
+flowchart LR
+    subgraph OFF["Offline: developer machine or Airflow"]
+        PL["python -m churn.pipeline<br/>weekly | retrain"]
+        ML[(MLflow registry)]
+        EXP["churn.export_app"]
+    end
+    subgraph REPO["GitHub: main"]
+        MP[models/production]
+        ADD[app/data]
+        SRC[src/churn + app]
+    end
+    subgraph RUN["Runtimes"]
+        SCC["Streamlit Community Cloud<br/>retail-churn-engine.streamlit.app"]
+        DK["Docker: churn-api<br/>FastAPI :8000"]
+        AF["Airflow<br/>weekly + monthly DAGs"]
+    end
+    PL --> ML
+    PL --> MP
+    PL --> EXP --> ADD
+    MP & ADD & SRC -- "git push" --> SCC
+    MP & SRC -- "docker build" --> DK
+    SRC -- "package install" --> AF
+    AF -. "runs" .-> PL
+```
+
+| Target | Status | How it is delivered |
+|---|---|---|
+| Streamlit app | Live at https://retail-churn-engine.streamlit.app | Community Cloud watches `main`; each push redeploys. Entry point `app/streamlit_app.py`, Python 3.12, `requirements.txt`, theme in `.streamlit/config.toml`. Reads 0.7 MB of model files and 7.3 MB of app data with no personal fields. Caches are keyed by file modification time, so a redeploy never shows stale artifacts. |
+| FastAPI service | Image built and verified locally | `Dockerfile` installs the package without dev tools, copies the model bundle and latest snapshot, sets `CHURN_ROOT=/srv`, runs Uvicorn with 2 workers as user `api`, health check on `/health`. Ready for any container host (Cloud Run, Azure Container Apps, ECS, Kubernetes); in production, mount the latest snapshot from shared storage instead of baking it in. |
+| Batch pipeline | DAG code ready | `dags/churn_dags.py` calls the same `run()` functions as the CLI. Needs an Airflow deployment, `DATABASE_URL` for the source PostgreSQL, shared storage for `data/` and `models/`, and a shared MLflow server. |
+
+**Releasing a new model or new weekly scores to the live app:**
+
+```bash
+python -m churn.pipeline retrain       # or: weekly
+pytest -q
+git add models/production app/data
+git commit -m "Refresh model and scores"
+git push origin main                   # Community Cloud redeploys
+```
 
 ---
 
@@ -323,32 +462,76 @@ pytest -q
 
 With `DATABASE_URL` set, `python -m churn.ingest --source postgres` extracts from PostgreSQL and scoring appends to the `churn_scores` table.
 
-The deployed app reads only committed artifacts (`models/production/` and `app/data/`); `requirements.txt` holds its pinned dependencies.
-
 ---
 
 ## Repository layout
 
 ```
-configs/config.yaml     all parameters: horizons, cutoffs, split, offer economics, simulation rates
-src/churn/
-  simulate/             re-delivers Dunnhumby as messy CRM, POS, loyalty and marketing exports
-  ingest.py             CSV / PostgreSQL ingestion into bronze
-  validation.py         raw contracts and silver schemas
-  cleaning/             identity resolution, transaction cleaning, silver build
-  features.py           point-in-time snapshots and labels
-  modeling.py           split, model factory, imbalance strategies
-  train.py              training, tuning, calibration, MLflow, bundle export
-  explain.py            SHAP reasons
-  clv.py  survival.py   customer value and time-to-churn
-  decision.py           expected profit and target selection
-  score.py  monitor.py  batch scoring and monitoring
-  api.py                FastAPI service
-  pipeline.py           weekly / retrain / all flows
-sql/extract/            source extract queries
-dags/                   Airflow DAGs
-app/                    Streamlit app and its read-only data
-models/production/      deployed model bundle and metadata
-tests/                  cleaning, leakage, split, API and app tests
-Dockerfile              API image
+.
+├── app/
+│   ├── streamlit_app.py            5-page Streamlit app (Overview, Customer scorer, What-if, Campaign planner, Model card)
+│   └── data/                       read-only artifacts for the app, written by churn.export_app
+├── configs/
+│   └── config.yaml                 every parameter: paths, calendar, simulation rates, horizons, cutoffs, split, offer economics, Optuna
+├── dags/
+│   └── churn_dags.py               Airflow: churn_weekly_scoring, churn_monthly_retrain
+├── models/
+│   └── production/                 churn_model.joblib (3 calibrated models + SHAP base model) and metadata.json
+├── sql/
+│   └── extract/                    one extract query per source table (CRM, POS legacy/v2, loyalty, marketing, products)
+├── src/churn/
+│   ├── config.py                   YAML config with attribute access, path resolution, logging
+│   ├── download.py                 Dunnhumby download from Kaggle
+│   ├── simulate/exports.py         re-delivers Dunnhumby as messy CRM, POS, loyalty and marketing exports
+│   ├── ingest.py                   CSV or PostgreSQL sources into bronze parquet with lineage
+│   ├── validation.py               pandera raw contracts (Polars) and strict silver schemas (pandas)
+│   ├── cleaning/
+│   │   ├── customers.py            name/phone/email/date parsing, blocking, fuzzy matching, union-find, golden record
+│   │   ├── transactions.py         POS harmonisation, dedup, test-data removal, returns linking, price repair
+│   │   └── run.py                  builds silver tables and the cleaning report
+│   ├── features.py                 point-in-time snapshots, 30/60/90-day labels, survival target
+│   ├── modeling.py                 purged out-of-time split, model factory, imbalance strategies
+│   ├── metrics.py                  recall and precision at k, lift and reliability tables, metric report
+│   ├── train.py                    baselines, Optuna, selection, calibration, SHAP, MLflow registry, bundle export
+│   ├── explain.py                  SHAP values and plain-language reasons
+│   ├── clv.py                      BG/NBD + Gamma-Gamma customer lifetime value
+│   ├── survival.py                 Kaplan-Meier by segment, Cox proportional hazards
+│   ├── decision.py                 risk segments, expected profit, target selection with control holdout
+│   ├── score.py                    weekly batch scoring and PostgreSQL write-back
+│   ├── monitor.py                  PSI drift, prediction drift, realised vs predicted, uplift, retrain trigger, Evidently
+│   ├── export_app.py               copies app artifacts with personal fields removed
+│   ├── api.py                      FastAPI service: /health, /predict, /explain
+│   └── pipeline.py                 CLI flows: weekly, retrain, all
+├── tests/
+│   ├── test_cleaning.py            parsers, identity resolution, transaction cleaning
+│   ├── test_features_split.py      point-in-time correctness, purged split
+│   ├── test_api.py                 endpoints and input validation
+│   └── test_app.py                 every app page renders without errors (AppTest)
+├── .streamlit/config.toml          app theme and server settings
+├── Dockerfile, .dockerignore       API image
+├── requirements.txt                Streamlit Cloud dependencies
+├── requirements-api.txt            API image dependencies
+├── requirements-dev.txt            full pipeline, training and test dependencies
+├── pyproject.toml                  package definition, ruff and pytest settings
+├── architecture.md                 scope and design
+└── checkpoint.md                   project status, deployment strategy, open items
 ```
+
+Generated locally by the pipeline and not committed:
+
+```
+data/
+├── raw/dunnhumby/                  original Kaggle CSVs
+├── exports/                        simulated source-system exports (crm, pos, loyalty, marketing, catalog)
+├── bronze/<table>/extract_date=…/  raw text parquet with lineage
+├── silver/                         customers, card_map, identity_links, transactions, baskets, complaints, points, campaigns
+├── gold/                           snapshots, churn_scores, target_list, survival tables
+└── reports/                        validation, cleaning, training and monitoring reports
+mlflow.db, mlruns/                  MLflow tracking store and artifacts
+```
+
+---
+
+## Project status
+
+Component status, deployment details and open items are tracked in [checkpoint.md](checkpoint.md).
