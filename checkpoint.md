@@ -2,6 +2,8 @@
 
 Status of the Retail Customer Churn & Retention Engine, its deployment, and what remains open.
 
+**Current state:** core system complete and live on Streamlit Community Cloud; API image built and verified; documentation complete. Remaining work is infrastructure that needs external services (PostgreSQL, Airflow, a container host).
+
 ## Links
 
 | What | Where |
@@ -25,11 +27,12 @@ Status of the Retail Customer Churn & Retention Engine, its deployment, and what
 | Training, tuning, calibration, SHAP, MLflow registry | Done | Pipeline run; model `churn-60d` registered |
 | CLV, survival, decision layer | Done | Pipeline run, app checks |
 | Monitoring (PSI, Evidently, realised vs predicted, retrain flag) | Done | Pipeline run, app Model card |
-| Streamlit app, 5 pages | Done, deployed | AppTest smoke tests; manual testing of every page on the live URL |
-| FastAPI service | Done | API tests; endpoint and error-case checks against the running container |
+| Streamlit app, 5 pages | Done, deployed | AppTest smoke tests; end-to-end testing of every page and use case on the live URL |
+| FastAPI service | Done | API tests; endpoint and error-case checks against the running container; empty and non-numeric feature input rejected with 422 |
 | Docker image for the API | Done | Built and run locally; health check healthy, non-root user |
 | Airflow DAGs (weekly scoring, monthly retrain) | Code complete | Not run: no Airflow environment |
 | Tests and lint | 27 passing, ruff clean | `pytest -q`, `ruff check` |
+| Documentation | Done | README: architecture, service calls, end-user flow, deployment, full stack, file layout (5 Mermaid diagrams, rendered on GitHub) |
 
 ## Headline results (out-of-time test)
 
@@ -103,6 +106,42 @@ For production hosting (Cloud Run, Azure Container Apps, ECS, or Kubernetes), pu
 
 Production setup needs: an Airflow deployment with the `churn` package installed, `DATABASE_URL` pointing at the source PostgreSQL, shared storage for `data/` and `models/`, and an MLflow tracking server in place of the local SQLite file.
 
+## Verified use cases (live app)
+
+| Page | Use case | Result |
+|---|---|---|
+| Customer scorer | Highest-risk customer C000493 | 63.7% risk, Critical; action Skip because CLV is $15 |
+| Customer scorer | Low-risk customer C001246 | 8% risk, CLV $75 |
+| What-if | Customer returns within 3 days | Risk falls from 15.1% to 2.6% (Low) |
+| What-if | 85 days silent plus 3 complaints | Risk rises to 34.7% (High) |
+| Campaign planner | Offer cost raised to $20 | 7 customers worth targeting, $99 profit, 71% ROI |
+| Campaign planner | Budget cap of 50 customers | 50 targeted, $509 profit, 204% ROI; CSV export available |
+| Model card | Metrics, model comparison, monitoring, Evidently report | All sections render; 6 of 45 features drifted, retrain not triggered |
+
+## API checks (Docker container)
+
+| Request | Response |
+|---|---|
+| `GET /health` | 200, model version, 2,330 customers loaded |
+| `POST /predict` with `C000493` | 200, 63.7% (matches the app) |
+| `POST /explain` with `C000493` | 200, same top reasons as the app plus full SHAP contributions |
+| Raw `features` payload (numbers as text accepted) | 200 |
+| Unknown customer | 404 |
+| Malformed ID, both or neither fields, unknown feature, non-numeric value, empty features | 422 |
+| Docker health check, user | healthy, non-root `api` |
+
+## Change log
+
+| Commit | Change |
+|---|---|
+| `727d571` | Full system: simulation, ingestion, contracts, cleaning, features, training, scoring, monitoring, API, app |
+| `c980f89` | App fixes: default page routing, scorer layout, what-if defaults, survival table |
+| `29c1adb` | App polish from live testing: wording, rounded labels, chart ranges, Evidently checks all 45 features, consistent profit figures |
+| `4f79a82` | Caches keyed by file modification time so redeploys never serve stale data |
+| `f579c46` | README rewrite with live link, architecture and service calls |
+| `32d70ed` | Docker image fixed (batch-only imports removed from the API, `CHURN_ROOT`), stricter API input validation |
+| `e01b4fa`, `8e8d510` | `checkpoint.md`; README end-user flow, deployment, full stack and file layout |
+
 ## Open items
 
 1. Run the PostgreSQL ingestion and score write-back against a real database.
@@ -110,6 +149,12 @@ Production setup needs: an Airflow deployment with the `churn` package installed
 3. Host the API image and point it at shared storage for the latest snapshot.
 4. Move MLflow from local SQLite to a shared tracking server.
 5. Feed real campaign outcomes back in so measured uplift (treated vs control holdout) replaces expected profit.
+
+## Resume from here
+
+1. Pick the next open item above; the first three need access to a PostgreSQL database, an Airflow environment, or a container host.
+2. For any code change: `pytest -q` and `ruff check src tests app dags`, then push to `main`; the live app redeploys automatically.
+3. After a model or score refresh, follow the release procedure above and confirm the new model version on the Model card page.
 
 ## Known caveats
 
