@@ -8,6 +8,7 @@
   "feature_drift.csv",
   "latest_snapshot.parquet",
   "lift.csv",
+  "manifest.json",
   "monitoring_summary.json",
   "raw_contracts.json",
   "realised_vs_predicted.csv",

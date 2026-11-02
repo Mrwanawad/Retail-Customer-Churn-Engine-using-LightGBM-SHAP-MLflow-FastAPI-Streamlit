@@ -74,10 +74,13 @@ def uplift(scores: pd.DataFrame, outcome_col: str) -> dict:
 
 def evidently_report(ref: pd.DataFrame, cur: pd.DataFrame, path) -> bool:
     try:
-        from evidently import Report
+        from evidently import DataDefinition, Dataset, Report
         from evidently.presets import DataDriftPreset
 
-        Report([DataDriftPreset()]).run(current_data=cur, reference_data=ref).save_html(str(path))
+        # declare every feature numeric; otherwise low-cardinality counts are inferred as categorical or skipped
+        schema = DataDefinition(numerical_columns=list(ref.columns))
+        ds = lambda d: Dataset.from_pandas(d.astype(float), data_definition=schema)  # noqa: E731
+        Report([DataDriftPreset()]).run(current_data=ds(cur), reference_data=ds(ref)).save_html(str(path))
         return True
     except Exception as e:  # report is a nice-to-have; PSI drives the trigger
         log.warning("Evidently report skipped: %s", e)

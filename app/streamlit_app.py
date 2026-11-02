@@ -81,7 +81,8 @@ def overview():
     at_risk = scores.risk_segment.isin(["High", "Critical"]).sum()
     kpi(c[2], "High + Critical risk", f"{at_risk:,}")
     kpi(c[3], "Targeted this week", f"{int(scores.targeted.sum()):,}", "Expected profit > 0; 10% of them held out as control")
-    kpi(c[4], "Expected campaign profit", f"${scores.loc[scores.targeted & ~scores.holdout, 'expected_profit'].sum():,.0f}")
+    kpi(c[4], "Expected campaign profit", f"${scores.loc[scores.targeted, 'expected_profit'].sum():,.0f}",
+        "All customers with positive expected profit, at $5 offer cost and 25% success (tune on Campaign planner)")
 
     left, right = st.columns([3, 2])
     with left:
@@ -122,7 +123,7 @@ def overview():
     st.subheader("Expected time to churn by segment")
     surv = load("survival_by_segment.parquet").set_index("risk_segment").reindex(RISK_LABELS).reset_index()
     curves = load("survival_curves.parquet")
-    a, b = st.columns([2, 3])
+    a, b = st.container(), st.container()  # table full width, then curves
     table = pd.DataFrame({
         "Segment": surv.risk_segment,
         "Customer-snapshots": surv.customers,
@@ -167,7 +168,13 @@ def customer_scorer():
     sv = sv[[s for s in sv.index if not s.startswith("missingindicator_")]]
     top = sv.reindex(sv.abs().sort_values(ascending=False).index).head(10)
     rest = sv.drop(top.index).sum()
-    labels = [f"{f} = {X.iloc[0][f] if f in X.columns else ''}" for f in top.index[::-1]]
+    def show_value(f):
+        v = X.iloc[0][f] if f in X.columns else None
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return "n/a"
+        return f"{v:,.2f}".rstrip("0").rstrip(".") if isinstance(v, (int, float, np.number)) else str(v)
+
+    labels = [f"{f} = {show_value(f)}" for f in top.index[::-1]]
     fig = go.Figure(go.Waterfall(
         orientation="h", measure=["absolute"] + ["relative"] * (len(top) + 1) + ["total"],
         y=["baseline", "other features", *labels, "model score (log-odds)"],
@@ -185,7 +192,7 @@ def customer_scorer():
         st.markdown("**Profile at snapshot**")
         show = ["recency_days", "gap_mean", "overdue_ratio", "baskets_90d", "spend_90d", "spend_trend",
                 "discount_share_90d", "complaints_90d", "tenure_days", "n_cards"]
-        st.dataframe(X[show].T.rename(columns={cid: "value"}).style.format("{:,.2f}"), width="stretch")
+        st.dataframe(X[show].T.rename(columns={cid: "value"}).style.format("{:,.2f}", na_rep="n/a"), width="stretch")
     st.caption("SHAP is computed on the uncalibrated booster (log-odds); the probability shown above is after calibration.")
 
 
@@ -271,6 +278,8 @@ def campaign_planner():
     tp = load("test_predictions.parquet")
     clv_proxy = tp.spend_180d * 0.25
     hist = profit_curve(tp.p_churn, clv_proxy, success, cost, y=tp[meta["label"]])
+    k_hist = int((hist.expected_profit > 0).sum())
+    hist = hist.head(max(3 * k_hist, 200))
     fig = go.Figure([
         go.Scatter(x=hist.k, y=hist.cum_expected_profit, name="expected"),
         go.Scatter(x=hist.k, y=hist.cum_realised_profit, name="realised (actual churners)"),
@@ -343,7 +352,8 @@ def model_card():
     t = cr["transactions"]
     dq = cr.get("dedup_quality", {})
     c = st.columns(4)
-    kpi(c[0], "POS lines in → out", f"{t['lines_in']:,} → {t['lines_out']:,}")
+    kpi(c[0], "POS lines in → out", f"{t['lines_in'] / 1e6:.2f}M → {t['lines_out'] / 1e6:.2f}M",
+        f"{t['lines_in']:,} raw lines → {t['lines_out']:,} clean lines")
     kpi(c[1], "Double-loaded lines removed", f"{t['duplicate_lines_dropped']:,}")
     kpi(c[2], "Loyalty cards → customers", f"{cr['customers']['cards_in']:,} → {cr['customers']['customers_out']:,}")
     if dq:
@@ -365,10 +375,13 @@ def model_card():
         if len(rvp):
             fig = px.line(rvp.melt(id_vars="snapshot_date", value_vars=["predicted_rate", "realised_rate"]),
                           x="snapshot_date", y="value", color="variable", markers=True, title="Predicted vs realised churn")
-            fig.update_yaxes(tickformat=".1%")
+            fig.update_yaxes(tickformat=".1%", rangemode="tozero", title=None)
             st.plotly_chart(fig, width="stretch")
         if (DATA / "evidently_drift.html").exists():
             with st.expander("Evidently data drift report"):
+                st.caption("Evidently flags drift with per-feature statistical tests, which become very sensitive at "
+                           "thousands of rows. The retrain trigger uses PSI > 0.2, a magnitude threshold, so the two "
+                           "counts differ by design.")
                 st.components.v1.html(load("evidently_drift.html"), height=900, scrolling=True)
 
 

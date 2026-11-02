@@ -8,7 +8,7 @@ import shap
 
 # plain-language templates; {v} is the customer's value
 REASON_TEXT = {
-    "recency_days": "No visit in {v:.0f} days",
+    "recency_days": "No visit in {v:.0f} day{s}",
     "overdue_ratio": "Overdue: {v:.1f}x their usual gap between visits",
     "gap_trend": "Visits getting further apart ({v:.1f}x usual gap)",
     "gap_mean": "Usual gap between visits is {v:.0f} days",
@@ -18,28 +18,28 @@ REASON_TEXT = {
     "visit_trend": "Visits vs previous quarter: {v:.0%}",
     "spend_trend": "Spend vs previous quarter: {v:.0%}",
     "spend_momentum_28d": "Last-4-week spend pace {v:.0%} of quarter average",
-    "baskets_28d": "{v:.0f} baskets in last 4 weeks",
-    "baskets_90d": "{v:.0f} baskets in last 90 days",
-    "baskets_180d": "{v:.0f} baskets in last 180 days",
-    "visit_days_28d": "{v:.0f} shopping days in last 4 weeks",
-    "visit_days_90d": "{v:.0f} shopping days in last 90 days",
+    "baskets_28d": "{v:.0f} basket{s} in last 4 weeks",
+    "baskets_90d": "{v:.0f} basket{s} in last 90 days",
+    "baskets_180d": "{v:.0f} basket{s} in last 180 days",
+    "visit_days_28d": "{v:.0f} shopping day{s} in last 4 weeks",
+    "visit_days_90d": "{v:.0f} shopping day{s} in last 90 days",
     "spend_28d": "${v:,.0f} spent in last 4 weeks",
     "spend_90d": "${v:,.0f} spent in last 90 days",
     "spend_180d": "${v:,.0f} spent in last 180 days",
     "avg_basket_90d": "Average basket ${v:,.2f}",
     "discount_share_90d": "{v:.0%} of basket value from discounts",
     "coupon_basket_share_90d": "Coupons on {v:.0%} of baskets",
-    "complaints_90d": "{v:.0f} complaint(s) in last 90 days",
-    "complaints_180d": "{v:.0f} complaint(s) in last 180 days",
-    "unresolved_complaints_180d": "{v:.0f} unresolved complaint(s)",
+    "complaints_90d": "{v:.0f} complaint{s} in last 90 days",
+    "complaints_180d": "{v:.0f} complaint{s} in last 180 days",
+    "unresolved_complaints_180d": "{v:.0f} unresolved complaint{s}",
     "days_since_complaint": "Complaint {v:.0f} days ago",
-    "returns_90d": "{v:.0f} return(s) in last 90 days",
-    "stores_90d": "Shops at {v:.0f} store(s)",
-    "tenure_days": "Customer for {v:.0f} days",
+    "returns_90d": "{v:.0f} return{s} in last 90 days",
+    "stores_90d": "Shops at {v:.0f} store{s}",
+    "tenure_days": "Customer for {v:.0f} day{s}",
     "points_balance": "{v:,.0f} unspent loyalty points",
-    "campaigns_targeted_180d": "Targeted by {v:.0f} campaign(s) in 180 days",
-    "coupons_redeemed_180d": "{v:.0f} campaign coupon(s) redeemed",
-    "commodities_90d": "Buys across {v:.0f} product lines",
+    "campaigns_targeted_180d": "Targeted by {v:.0f} campaign{s} in 180 days",
+    "coupons_redeemed_180d": "{v:.0f} campaign coupon{s} redeemed",
+    "commodities_90d": "Buys across {v:.0f} product line{s}",
     "avg_departments_90d": "{v:.1f} departments per basket",
 }
 
@@ -49,7 +49,8 @@ def reason_text(feature: str, value) -> str:
     if tpl is None or value is None or (isinstance(value, float) and np.isnan(value)):
         return f"{feature.replace('_', ' ')} = {value}"
     try:
-        return tpl.format(v=float(value))
+        v = float(value)
+        return tpl.format(v=v, s="" if round(v) == 1 else "s")
     except (TypeError, ValueError):
         return f"{feature.replace('_', ' ')} = {value}"
 
