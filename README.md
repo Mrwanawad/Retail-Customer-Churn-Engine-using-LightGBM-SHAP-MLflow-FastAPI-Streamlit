@@ -8,6 +8,8 @@
 
 **Live demo: https://retail-churn-engine.streamlit.app**
 
+<p align="center"><img src="docs/demo.gif" width="100%" alt="Screen recording of the churn app: the weekly overview, the riskiest customer with SHAP reasons, a profit-based campaign target list, and the model monitoring snapshot"/></p>
+
 An end-to-end churn system for a grocery loyalty programme. Every week it ingests raw exports from CRM, POS, loyalty and marketing systems, cleans and resolves them into one customer view, scores each customer's probability of not buying again in the next 30, 60 and 90 days, explains every score, estimates customer lifetime value, and selects the customers worth a retention offer by expected profit. Monitoring decides when the model needs retraining.
 
 Built on **Dunnhumby *The Complete Journey***: two years of real supermarket transactions from 2,500 households (2.6M line items, 582 stores, real campaigns and coupon redemptions), re-delivered as messy source-system exports so the cleaning layer faces production-grade problems.

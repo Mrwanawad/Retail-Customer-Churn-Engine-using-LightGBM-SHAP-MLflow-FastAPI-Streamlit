@@ -24,3 +24,5 @@ freeze.txt
 .streamlit/secrets.toml
 catboost_info/
 *.egg-info/
+
+docs/demo/build/
